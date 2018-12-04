@@ -81,6 +81,17 @@ func (c *Client) SetSoftwareName(name string) {
 // Discover contacts the STUN server and gets the response of NAT type, host
 // for UDP punching.
 func (c *Client) Discover() (NATType, *Host, error) {
+	var h *Host
+	t, hs, err := c.DiscoverAll()
+	if len(hs) > 0 {
+		h = hs[0]
+	}
+	return t, h, err
+}
+
+// DiscoverAll contacts the STUN server and gets the response of NAT type,
+// There may be multiple hosts observed.
+func (c *Client) DiscoverAll() (NATType, []*Host, error) {
 	if c.serverAddr == "" {
 		c.SetServerAddr(DefaultServerAddr)
 	}
@@ -98,7 +109,7 @@ func (c *Client) Discover() (NATType, *Host, error) {
 		}
 		defer conn.Close()
 	}
-	return c.discover(conn, serverUDPAddr)
+	return c.discoverAll(conn, serverUDPAddr)
 }
 
 // Keepalive sends and receives a bind request, which ensures the mapping stays open

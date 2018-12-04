@@ -21,6 +21,11 @@ import (
 	"net"
 )
 
+var (
+	ErrAddrNotMatch = errors.New("Server error: response IP/port")
+	ErrNoOtherAddr  = errors.New("Server error: no changed address.")
+)
+
 // Follow RFC 3489 and RFC 5389.
 // Figure 2: Flow for type discovery process (from RFC 3489).
 //                        +--------+
@@ -65,17 +70,18 @@ import (
 //                                  |N
 //                                  |       Port
 //                                  +------>Restricted
-func (c *Client) discover(conn net.PacketConn, addr *net.UDPAddr) (NATType, *Host, error) {
+func (c *Client) discoverAll(conn net.PacketConn, addr *net.UDPAddr) (NATType, []*Host, error) {
 	// Perform test1 to check if it is under NAT.
+	hs := make([]*Host, 0, 3)
 	c.logger.Debugln("Do Test1")
 	c.logger.Debugln("Send To:", addr)
 	resp, err := c.test1(conn, addr)
 	if err != nil {
-		return NATError, nil, err
+		return NATError, hs, err
 	}
 	c.logger.Debugln("Received:", resp)
 	if resp == nil {
-		return NATBlocked, nil, nil
+		return NATBlocked, hs, nil
 	}
 	// identical used to check if it is open Internet or not.
 	identical := resp.identical
@@ -83,10 +89,11 @@ func (c *Client) discover(conn net.PacketConn, addr *net.UDPAddr) (NATType, *Hos
 	changedAddr := resp.changedAddr
 	// mappedAddr is used as the return value, its IP is used for tests
 	mappedAddr := resp.mappedAddr
+	hs = append(hs, mappedAddr)
 	// Make sure IP and port are not changed.
 	if resp.serverAddr.IP() != addr.IP.String() ||
 		resp.serverAddr.Port() != uint16(addr.Port) {
-		return NATError, mappedAddr, errors.New("Server error: response IP/port")
+		return NATError, hs, ErrAddrNotMatch
 	}
 	// if changedAddr is not available, use otherAddr as changedAddr,
 	// which is updated in RFC 5780
@@ -95,7 +102,7 @@ func (c *Client) discover(conn net.PacketConn, addr *net.UDPAddr) (NATType, *Hos
 	}
 	// changedAddr shall not be nil
 	if changedAddr == nil {
-		return NATError, mappedAddr, errors.New("Server error: no changed address.")
+		return NATError, hs, ErrNoOtherAddr
 	}
 	// Perform test2 to see if the client can receive packet sent from
 	// another IP and port.
@@ -103,23 +110,23 @@ func (c *Client) discover(conn net.PacketConn, addr *net.UDPAddr) (NATType, *Hos
 	c.logger.Debugln("Send To:", addr)
 	resp, err = c.test2(conn, addr)
 	if err != nil {
-		return NATError, mappedAddr, err
+		return NATError, hs, err
 	}
 	c.logger.Debugln("Received:", resp)
 	// Make sure IP and port are changed.
 	if resp != nil &&
 		(resp.serverAddr.IP() == addr.IP.String() ||
 			resp.serverAddr.Port() == uint16(addr.Port)) {
-		return NATError, mappedAddr, errors.New("Server error: response IP/port")
+		return NATError, hs, ErrAddrNotMatch
 	}
 	if identical {
 		if resp == nil {
-			return NATSymmetricUDPFirewall, mappedAddr, nil
+			return NATSymmetricUDPFirewall, hs, nil
 		}
-		return NATNone, mappedAddr, nil
+		return NATNone, hs, nil
 	}
 	if resp != nil {
-		return NATFull, mappedAddr, nil
+		return NATFull, hs, nil
 	}
 	// Perform test1 to another IP and port to see if the NAT use the same
 	// external IP.
@@ -131,18 +138,18 @@ func (c *Client) discover(conn net.PacketConn, addr *net.UDPAddr) (NATType, *Hos
 	}
 	resp, err = c.test1(conn, caddr)
 	if err != nil {
-		return NATError, mappedAddr, err
+		return NATError, hs, err
 	}
 	c.logger.Debugln("Received:", resp)
 	if resp == nil {
 		// It should be NAT_BLOCKED, but will be detected in the first
 		// step. So this will never happen.
-		return NATUnknown, mappedAddr, nil
+		return NATUnknown, hs, nil
 	}
 	// Make sure IP/port is not changed.
 	if resp.serverAddr.IP() != caddr.IP.String() ||
 		resp.serverAddr.Port() != uint16(caddr.Port) {
-		return NATError, mappedAddr, errors.New("Server error: response IP/port")
+		return NATError, hs, ErrAddrNotMatch
 	}
 	if mappedAddr.IP() == resp.mappedAddr.IP() && mappedAddr.Port() == resp.mappedAddr.Port() {
 		// Perform test3 to see if the client can receive packet sent
@@ -151,18 +158,19 @@ func (c *Client) discover(conn net.PacketConn, addr *net.UDPAddr) (NATType, *Hos
 		c.logger.Debugln("Send To:", caddr)
 		resp, err = c.test3(conn, caddr)
 		if err != nil {
-			return NATError, mappedAddr, err
+			return NATError, hs, err
 		}
 		c.logger.Debugln("Received:", resp)
 		if resp == nil {
-			return NATPortRestricted, mappedAddr, nil
+			return NATPortRestricted, hs, nil
 		}
 		// Make sure IP is not changed, and port is changed.
 		if resp.serverAddr.IP() != caddr.IP.String() ||
 			resp.serverAddr.Port() == uint16(caddr.Port) {
-			return NATError, mappedAddr, errors.New("Server error: response IP/port")
+			return NATError, hs, ErrAddrNotMatch
 		}
-		return NATRestricted, mappedAddr, nil
+		return NATRestricted, hs, nil
 	}
-	return NATSymmetric, mappedAddr, nil
+	hs = append(hs, resp.mappedAddr)
+	return NATSymmetric, hs, nil
 }
